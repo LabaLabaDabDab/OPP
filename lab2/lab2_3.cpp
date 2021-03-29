@@ -20,8 +20,6 @@ void matrMul(double* A, double* x, double* xnew) {
 }
 
 int main() {
-    omp_set_num_threads(1);
-
     double startTime = omp_get_wtime( );
 
     double *x = nullptr, *b = nullptr, *xnew = nullptr, tau = 0.0001, norm = 0, norm_b = 0, sum = 0;
