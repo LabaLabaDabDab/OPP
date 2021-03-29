@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
             for(int j = 0; j < N; ++j) {
                 sum += matrix[i * N + j] * x[j];
             }
-            sum -= b[i]; //Ax - b
+            sum -= b[i]; 
             processX[i] = x[i + startLine] - t * sum;
             processAnswer += sum * sum;
         }
