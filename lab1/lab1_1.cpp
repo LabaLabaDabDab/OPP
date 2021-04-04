@@ -2,57 +2,58 @@
 #include <cmath>
 #include <ctime>
 #include <mpi.h>
- 
+
 #define N 4096
 #define t 10e-6
 #define eps 10e-9
- 
-void init(int **perProcess, int *startLine, double **matrix, double **b, double **x, int size, int rank) {
+
+void init(int **perProcess, int **processDispls, double **matrix, double **b, double **x, int size, int rank) {
     *perProcess = new int[size]();
+    *processDispls = new int[size]();
+    int offset = 0;
     for(int i = 0, tmp = size - (N % size); i < size; ++i) {
+        (*processDispls)[i] = offset;
         (*perProcess)[i] = i < tmp ? (N / size) : (N / size + 1);
-        if(i < rank) {
-            *startLine += (*perProcess)[i];
-        }
+        offset += ((*perProcess)[i]);
     }
- 
+
     *matrix = new double[(*perProcess)[rank] * N];
     for(int i = 0; i < (*perProcess)[rank]; ++i) {
         for(int j = 0; j < N; ++j) {
-            (*matrix)[i * N + j] = ((*startLine) + i) == j ? 2 : 1;
+            (*matrix)[i * N + j] = ((*processDispls)[rank] + i) == j ? 2 : 1;
         }
     }
- 
+
     *b = new double[(*perProcess)[rank]];
     for(int i = 0; i < (*perProcess)[rank]; ++i) {
         (*b)[i] = N + 1;
     }
- 
+
     *x = new double[N]();
 }
- 
+
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
- 
+
     int rank = 0, size = 0;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
- 
-    int startLine = 0;
+
     int *perProcess = 0;
+    int *processDispls = 0;
     double *matrix = 0, *b = 0, *x = 0;
-    init(&perProcess, &startLine, &matrix, &b, &x, size, rank);
- 
+    init(&perProcess, &processDispls, &matrix, &b, &x, size, rank);
+
     double normB = 0, startTime = 0;
     if(rank == 0) {
         startTime = MPI_Wtime();
- 
+
         for(int i = 0; i < N; ++i) {
             normB += b[i] * b[i];
         }
         normB = sqrt(normB);
     }
- 
+
     double *processX = new double[perProcess[rank]];
     int keepCalc = 1;
     while(keepCalc) {
@@ -62,42 +63,25 @@ int main(int argc, char **argv) {
             for(int j = 0; j < N; ++j) {
                 sum += matrix[i * N + j] * x[j];
             }
-            sum -= b[i]; 
-            processX[i] = x[i + startLine] - t * sum;
+            sum -= b[i];
+            processX[i] = x[i + processDispls[rank]] - t * sum;
             processAnswer += sum * sum;
         }
- 
-        if(rank != 0) {
-            MPI_Send(processX, perProcess[rank], MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
-            MPI_Send(&processAnswer, 1, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
-        } else {
-            for(int i = startLine, c = startLine + perProcess[rank]; i < c; ++i) {
-                x[i] = processX[i - startLine];
-            }
- 
-            double sum = processAnswer;
-            for(int i  = 1, currentLine = perProcess[rank]; i < size; ++i) {
-                MPI_Status status;
-                MPI_Recv(&x[currentLine], perProcess[i], MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &status);
-                currentLine += perProcess[i];
- 
-                double tmp;
-                MPI_Recv(&tmp, 1, MPI_DOUBLE, i, 1, MPI_COMM_WORLD, &status);
-                sum += tmp;
-            }
-            sum = sqrt(sum);
- 
- 
-            keepCalc = sum / normB >= eps;
+
+        double sum = 0;
+        MPI_Allreduce(&processAnswer, &sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        if (rank == 0) {
+            keepCalc = sqrt(sum) / normB >= eps;
         }
         MPI_Bcast(&keepCalc, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        MPI_Bcast(x, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Allgatherv(processX, perProcess[rank], MPI_DOUBLE, x, perProcess, processDispls, MPI_DOUBLE, MPI_COMM_WORLD);
     }
- 
+
     if(rank == 0) {
         double endTime = MPI_Wtime();
         std::cout << "Size: " << size << ", time: " << (endTime - startTime) << std::endl;
- 
+
         bool correctAnswer = true;
         for(int i = 0; i < N; ++i) {
             if(fabs(fabs(x[i]) - 1) >= eps) {
@@ -105,12 +89,13 @@ int main(int argc, char **argv) {
                 break;
             }
         }
+
         if(correctAnswer)
             std::cout << "Accepted." << std::endl;
         else
             std::cout << "WA." << std::endl;
     }
- 
+
     delete[] processX;
     delete[] x;
     delete[] b;
