@@ -8,19 +8,20 @@
 #define t 10e-6
 #define eps 10e-9
 
-void init(int **perProcess, int *startLine, double **matrix, double **b, double **x, int size, int rank) {
+void init(int **perProcess, int **processDispls, double **matrix, double **b, double **x, int size, int rank) {
     *perProcess = new int[size]();
+    *processDispls = new int[size]();
+    int offset = 0;
     for(int i = 0, tmp = size - (N % size); i < size; ++i) {
+        (*processDispls)[i] = offset;
         (*perProcess)[i] = i < tmp ? (N / size) : (N / size + 1);
-        if (i < rank) {
-            *startLine += (*perProcess)[i];
-        }
+        offset += ((*perProcess)[i]);
     }
 
     *matrix = new double[(*perProcess)[rank] * N];
     for(int i = 0; i < (*perProcess)[rank]; ++i) {
         for(int j = 0; j < N; ++j) {
-            (*matrix)[i * N + j] = ((*startLine) + i) == j ? 2 : 1;
+            (*matrix)[i * N + j] = ((*processDispls)[rank] + i) == j ? 2 : 1;
         }
     }
 
@@ -39,33 +40,18 @@ int main(int argc, char **argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    int startLine = 0;
     int *perProcess = 0;
+    int *processDispls = 0;
     double *matrix = 0, *b = 0, *x = 0;
-    init(&perProcess, &startLine, &matrix, &b, &x, size, rank);
+    init(&perProcess, &processDispls, &matrix, &b, &x, size, rank);
 
-    double startTime = 0, normB = 0;
-    if(rank != 0) {
-        for(int i = 0; i < perProcess[rank]; ++i) {
-            normB += b[i] * b[i];
-        }
-        MPI_Send(&normB, 1, MPI_DOUBLE, 0, 4, MPI_COMM_WORLD);
-    } else {
-        startTime = MPI_Wtime();
+    double startTime = 0, normB = 0, tmpNormB = 0 ;
 
-        for(int i = 0; i < perProcess[rank]; ++i) {
-            normB += b[i] * b[i];
-        }
-
-        for(int i = 1; i < size; ++i) {
-            double tmp;
-            MPI_Status status;
-            MPI_Recv(&tmp, 1, MPI_DOUBLE, i, 4, MPI_COMM_WORLD, &status);
-            normB += tmp;
-        }
-
-        normB = sqrt(normB);
+    for(int i = 0; i < perProcess[rank]; ++i) {
+        tmpNormB += b[i] * b[i];
     }
+    MPI_Allreduce(&tmpNormB, &normB, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
 
     double *tmpSum = new double[perProcess[rank]];
     double *tmpX = new double[N / size + 1]();
@@ -75,7 +61,8 @@ int main(int argc, char **argv) {
             tmpSum[i] = 0;
         }
 
-        for(int i = 0, currentCrds = startLine; i < size; ++i) {
+
+        for(int i = 0, currentCrds = processDispls[rank]; i < size; ++i) {
 
             for(int j = 0; j < perProcess[rank]; ++j) {
                 for(int k = currentCrds, c = currentCrds + perProcess[i]; k < c; ++k) {
@@ -98,38 +85,24 @@ int main(int argc, char **argv) {
             processAnswer += tmpSum[i] * tmpSum[i];
         }
 
-        if(rank != 0) {
-            MPI_Send(&processAnswer, 1, MPI_DOUBLE, 0, 2, MPI_COMM_WORLD);
-        } else {
-            double sum = processAnswer;
-            for(int i  = 1; i < size; ++i) {
-                MPI_Status status;
-                double tmp;
-                MPI_Recv(&tmp, 1, MPI_DOUBLE, i, 2, MPI_COMM_WORLD, &status);
-                sum += tmp;
-            }
-            sum = sqrt(sum);
+        double sum = 0;
+        MPI_Allreduce(&processAnswer, &sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-            keepCalc = sum / normB >= eps;
+        if (rank == 0) {
+            keepCalc = sqrt(sum) / normB >= eps;
         }
 
         MPI_Bcast(&keepCalc, 1, MPI_INT, 0, MPI_COMM_WORLD);
     }
 
-    if(rank != 0) {
-        MPI_Send(x, perProcess[rank], MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
-    } else {
-        double *fullX = new double[N];
-        for(int i = 0; i < perProcess[rank]; ++i) {
-            fullX[i] = x[i];
-        }
+    double *fullX;
+    if (rank == 0) {
+        fullX = new double[N];
+    }
 
-        for(int i = 1, currentLine = perProcess[rank]; i < size; ++i) {
-            MPI_Status status;
-            MPI_Recv(&fullX[currentLine], perProcess[i], MPI_DOUBLE, i, 1, MPI_COMM_WORLD, &status);
-            currentLine += perProcess[i];
-        }
+    MPI_Gatherv(x, perProcess[rank], MPI_DOUBLE, fullX, perProcess, processDispls, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
+    if (rank == 0) {
         double endTime = MPI_Wtime();
         std::cout << "Size: " << size << ", time: " << (endTime - startTime) << std::endl;
 
